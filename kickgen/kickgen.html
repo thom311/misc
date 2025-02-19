@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kickstart Generator</title>
+</head>
+<body>
+    <script>
+
+        const kickstart_data = `<!--
+  HTML1: HTML [<span style="color:#90EE90">GREEN</span>] Can contain HTML.
+  VAR1: TXT [value\\] 2<p>] Text for variable 1.
+  VAR2: TXT Text for variable 2.
+  VAR1_TITLE: ATTR [This is the tooli<p> for VAR1] Tooltip (used in an HTML attribute).
+  VAR1_COLOR: COLOR [#ADD8E6] Color for variable 1.
+  VAR2_COLOR: COLOR [#FF7F7F] Color for variable 2.
+-->
+<!DOCTYPE html>
+<html>
+  <body>
+    <h1 style="background-color:{VAR1_COLOR}">hello {VAR1} &lt;{VAR2}&gt;</h1>
+    <p>{HTML1}</p>
+    <p>Other text: <span title="{VAR1_TITLE}" style="color:{VAR1_COLOR}">{VAR1}</span> :: <span style="color:{VAR2_COLOR}">{VAR2}</span></p>
+  </body>
+</html>
+`;
+
+        function parseSplitSections(kickstart_data) {
+            const parts = kickstart_data.split(/(\n-->\n)/g, 3);
+            const [preamble, separator, data] = parts;
+            return [preamble + separator, data];
+        }
+
+        function parseExtractVariables(kickstart_data) {
+            const [preamble, data] = parseSplitSections(kickstart_data);
+
+            const result = []
+            const regex = /^(\w+): *(\w+) +(\[(.*?)(?<!\\)\])?(.*)$/;
+            for (const line of preamble.split("\n")) {
+                const match = line.trim().match(regex);
+                if (match) {
+                    const [unused1, name, type, unused2, default_value0, comment] = match;
+
+                    let default_value = default_value0;
+                    if (default_value === undefined) {
+                        default_value = "";
+                    } else {
+                        default_value = default_value.replaceAll("\\]", "]").replaceAll("\\\\", "\\");
+                    }
+
+                    result.push({
+                        name,
+                        type,
+                        default_value,
+                        comment: ((comment === undefined) ? "" : comment),
+                        id: "input:" + name
+                    });
+                }
+            }
+
+            return result
+        }
+
+        function htmlEscape(str) {
+            return str.replace(
+                /[&<>"']/g,
+                function (ch) {
+                    switch (ch) {
+                        case '&': return '&amp;';
+                        case '<': return '&lt;';
+                        case '>': return '&gt;';
+                        case '"': return '&quot;';
+                        case "'": return '&apos;';
+                        default: return ch;
+                    }
+                }
+            );
+        }
+
+        function sanitizeHexColor(input) {
+            // Remove anything that is not a valid hex character or the hash (#) symbol
+            const sanitized = input.replace(/[^0-9a-fA-F#]/g, '');
+
+            // If it starts with #, allow 6 or 3 characters
+            if (sanitized.startsWith('#')) {
+                // For 6-character hex, validate if length is 7 (1 for # and 6 for hex digits)
+                if (sanitized.length === 4 || sanitized.length === 7) {
+                    return sanitized;
+                }
+            }
+
+            return '#D8FF00';
+        }
+
+        function generate(kickstart_data, kickstart_variables) {
+            const [preamble, data] = parseSplitSections(kickstart_data);
+
+            const mapping = {};
+
+            for (const variable of kickstart_variables) {
+                const input = document.getElementById(variable.id);
+
+                let value = input.value;
+                switch (variable.type) {
+                    case "TXT":
+                    case "ATTR":
+                        value = htmlEscape(value);
+                        break;
+                    case "COLOR":
+                        value = sanitizeHexColor(value);
+                        break;
+                }
+
+                mapping[variable.name] = value;
+            }
+
+            const new_data = data.replace(
+                /\{(\w+)\}/g,
+                (match, key) => mapping[key] !== undefined ? mapping[key] : match
+            );
+
+            return new_data;
+        }
+
+        function getVariableTooltip(variable, valid) {
+            let validMsg = "";
+            if (!valid) {
+                validMsg = " [INVALID VALUE!]";
+            }
+            return variable.name + " (type " + variable.type + ")" + validMsg + ": " + variable.comment;
+        }
+
+        function createForm(kickstart_data, kickstart_variables) {
+            const form = document.createElement("form");
+            form.method = "POST";
+            form.action = "/submit";
+
+            for (const variable of kickstart_variables) {
+                const label = document.createElement("label");
+                label.id = "label:" + variable.id;
+                label.setAttribute("for", variable.id);
+                label.textContent = variable.name + ": ";
+
+                const input = document.createElement("input");
+                input.type = "text";
+                input.id = variable.id;
+                input.name = variable.name;
+                input.placeholder = variable.default_value;
+                input.value = variable.default_value;
+                input.title = getVariableTooltip(variable, true);
+                input.style.width = '50%';
+                input.addEventListener("input", function() {
+                    validateInput(variable);
+                    showPreviewOnIdle(kickstart_data, kickstart_variables);
+                });
+
+                form.appendChild(label);
+                form.appendChild(input);
+                form.appendChild(document.createElement('br'));
+            }
+
+            const resetButton = document.createElement("button");
+            resetButton.type = "submit";
+            resetButton.textContent = "Reset";
+            resetButton.addEventListener("click", function (event) {
+                clickReset(event, kickstart_data, kickstart_variables);
+            });
+            form.appendChild(resetButton);
+
+            const downloadButton = document.createElement("button");
+            downloadButton.type = "submit";
+            downloadButton.textContent = "Download";
+            downloadButton.addEventListener("click", function (event) {
+                clickDownload(event, kickstart_data, kickstart_variables);
+            });
+            form.appendChild(downloadButton);
+
+            document.body.appendChild(form);
+        }
+
+        _showPreviewScheduled = false;
+
+        function showPreviewOnIdle(kickstart_data, kickstart_variables) {
+            if (_showPreviewScheduled) { return; }
+
+            _showPreviewScheduled = true
+            setTimeout(function() {
+                _showPreviewScheduled = false;
+                showPreview(kickstart_data, kickstart_variables);
+            }, 0);
+        }
+
+        function showPreview(kickstart_data, kickstart_variables) {
+            const checkbox = document.getElementById("previewCodeTemplate")
+            checkbox.onchange = function(event) {
+                showPreviewOnIdle(kickstart_data, kickstart_variables);
+            };
+            const showTemplate = !checkbox.checked;
+
+            const data = generate(kickstart_data, kickstart_variables);
+
+            const iframe = document.getElementById("previewIFrame");
+            const iframeDocument = iframe.contentDocument || iframe.contentWindow.document;
+            iframeDocument.open();
+            iframeDocument.write(data);
+            iframeDocument.close();
+
+            const previewCode = document.getElementById("previewCode");
+            if (showTemplate) {
+                previewCode.textContent = data;
+            } else {
+                previewCode.textContent = kickstart_data;
+            }
+
+        }
+
+        function validateInput(variable) {
+            const input = document.getElementById(variable.id);
+            const label = document.getElementById("label:" + variable.id);
+
+            const value = input.value;
+            let valid = true;
+
+            switch (variable.type) {
+                case "COLOR":
+                    valid = (value.trim() === sanitizeHexColor(value));
+                    break;
+            }
+
+            if (valid) {
+                input.style.borderColor = '';
+            } else {
+                input.style.borderColor = 'red';
+            }
+            input.title = getVariableTooltip(variable, valid);
+            label.title = getVariableTooltip(variable, valid);
+        }
+
+        function clickDownload(event, kickstart_data, kickstart_variables) {
+            event.preventDefault();
+
+            const data = generate(kickstart_data, kickstart_variables)
+
+            const blob = new Blob([data], { type: 'text/html' });
+
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'newsletter.html';
+
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+        }
+
+        function clickReset(event, kickstart_data, kickstart_variables) {
+            event.preventDefault();
+            for (const variable of kickstart_variables) {
+                const input = document.getElementById(variable.id);
+                input.value = variable.default_value;
+            }
+            for (const variable of kickstart_variables) {
+                validateInput(variable);
+            }
+            showPreviewOnIdle(kickstart_data, kickstart_variables);
+        }
+
+        function previewCodeTemplateChanged(kickstart_data, kickstart_variables) {
+            showPreviewOnIdle(kickstart_data, kickstart_variables);
+        }
+
+        kickstart_variables = parseExtractVariables(kickstart_data);
+
+        createForm(kickstart_data, kickstart_variables);
+
+        showPreviewOnIdle(kickstart_data, kickstart_variables);
+
+    </script>
+
+    <iframe id="previewIFrame" height="300px" width="95%"></iframe>
+
+    <br />
+
+    <input type="checkbox" id="previewCodeTemplate" name="previewCodeTemplate" />
+    <label for="previewCodeTemplate">Show kickstart</label>
+
+    <br />
+
+    <pre><code id="previewCode"></code></pre>
+
+</body>
+</html>
